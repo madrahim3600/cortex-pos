@@ -77,6 +77,20 @@ def create_bot_order(data: dict, db: Session = Depends(get_db)):
     if not tenant:
         raise HTTPException(status_code=404, detail="Biznes topilmadi")
 
+    # reservation_time (oldindan band qilish uchun)
+    reservation_time = None
+    if data.get("reservation_time"):
+        try:
+            from datetime import datetime as _dt
+            rt = data["reservation_time"]
+            # ISO format yoki "YYYY-MM-DD HH:MM:SS"
+            try:
+                reservation_time = _dt.fromisoformat(rt)
+            except ValueError:
+                reservation_time = _dt.strptime(rt, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            reservation_time = None
+
     order = Order(
         tenant_id=tenant_id,
         order_type=data.get("order_type", "bot"),
@@ -85,6 +99,7 @@ def create_bot_order(data: dict, db: Session = Depends(get_db)):
         customer_name=data.get("customer_name", ""),
         note=data.get("note", ""),
         persons_count=data.get("persons_count", 1),
+        reservation_time=reservation_time,
         status=OrderStatus.new,
         subtotal=0, total=0
     )
@@ -142,7 +157,12 @@ def create_bot_order(data: dict, db: Session = Depends(get_db)):
     order.total = total
     if order.room_id:
         room = db.query(Room).filter(Room.id == order.room_id).first()
-        if room: room.status = RoomStatus.busy
+        if room:
+            # Agar oldindan band bo'lsa — reserved, hozirgi bo'lsa — busy
+            if reservation_time:
+                room.status = RoomStatus.reserved
+            else:
+                room.status = RoomStatus.busy
     db.commit()
     return {"id": order.id, "total": order.total, "status": "new"}
 
