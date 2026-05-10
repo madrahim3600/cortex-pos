@@ -203,3 +203,49 @@ def register_bot_user(data: dict, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(bot_user)
     return {"id": bot_user.id, "chat_id": bot_user.chat_id}
+
+
+@router.get("/my-orders")
+def get_my_orders(tenant_id: int, chat_id: str, db: Session = Depends(get_db)):
+    """Botdagi foydalanuvchining oxirgi buyurtmalari"""
+    bot_user = db.query(BotUser).filter(
+        BotUser.chat_id == str(chat_id), BotUser.tenant_id == tenant_id
+    ).first()
+    if not bot_user:
+        return []
+    orders = db.query(Order).filter(
+        Order.tenant_id == tenant_id,
+        Order.bot_user_id == bot_user.id
+    ).order_by(Order.id.desc()).limit(10).all()
+    return [{
+        "id": o.id,
+        "status": o.status.value if hasattr(o.status, 'value') else o.status,
+        "total": o.total,
+        "created_at": str(o.created_at)
+    } for o in orders]
+
+
+@router.get("/order-detail/{order_id}")
+def get_order_detail(order_id: int, db: Session = Depends(get_db)):
+    """Buyurtma haqida batafsil"""
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Topilmadi")
+    items = []
+    for item in order.items:
+        items.append({
+            "product_name": item.product.name if item.product else "O'chirilgan mahsulot",
+            "quantity": item.quantity,
+            "unit_price": item.unit_price,
+            "total_price": item.total_price
+        })
+    return {
+        "id": order.id,
+        "status": order.status.value if hasattr(order.status, 'value') else order.status,
+        "total": order.total,
+        "subtotal": order.subtotal,
+        "discount": order.discount,
+        "note": order.note or "",
+        "items": items,
+        "created_at": str(order.created_at)
+    }
