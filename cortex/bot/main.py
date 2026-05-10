@@ -1,11 +1,10 @@
 """
-CORTEX POS — Telegram Bot (Multi-tenant Polling)
-- Soddalashtirilgan UX
-- Admin inline tasdiqlash/rad
-- Admin qo'lda xabar yuborish
-- Chek yuborish (to'lovdan keyin)
-- Mahsulotlar narxi ko'rinib turadi
-- Telefon + izoh
+CORTEX POS — Telegram Bot (qayta yozilgan, sodda)
+─────────────────────────────────────────────────
+- Barcha buyurtmalar order_type="bot" (online) sifatida saqlanadi
+- Mahsulot tanlash inline tugmalar orqali (ishonchli, ID-based)
+- Buyurtmalarim — tugmalar orqali oxirgi 5 buyurtmani ko'rsatadi
+- Chek to'lovdan keyin avtomatik yetkaziladi (backend tomonidan)
 """
 import asyncio
 import logging
@@ -14,7 +13,7 @@ import aiohttp
 from aiohttp import web
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -33,25 +32,26 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 active_bots: dict = {}
 
 
-# ── FSM ──
+# ══════════════════════════════════════════════
+# FSM
+# ══════════════════════════════════════════════
 class OrderState(StatesGroup):
-    choosing_type  = State()
-    choosing_room  = State()
-    choosing_cat   = State()
-    choosing_prod  = State()
-    viewing_cart   = State()
+    browsing      = State()  # menyu ko'rib chiqish (kategoriya/mahsulot)
     entering_phone = State()
     entering_note  = State()
     confirming     = State()
 
 
-# ── API ──
+# ══════════════════════════════════════════════
+# API
+# ══════════════════════════════════════════════
 async def api_get(path: str):
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(f"{BACKEND_URL}{path}", timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status == 200:
                     return await r.json()
+                logger.error(f"API GET {path}: {r.status}")
     except Exception as e:
         logger.error(f"API GET {path}: {e}")
     return None
@@ -70,91 +70,125 @@ async def api_post(path: str, data: dict):
     return None
 
 
-# ── KEYBOARDS ──
+# ══════════════════════════════════════════════
+# REPLY KEYBOARDS
+# ══════════════════════════════════════════════
 def main_kb():
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📦 Buyurtma berish")],
-        [KeyboardButton(text="📖 Menyu"), KeyboardButton(text="📋 Buyurtmalarim")],
+        [KeyboardButton(text="🍽 Buyurtma berish")],
+        [KeyboardButton(text="📋 Buyurtmalarim"), KeyboardButton(text="📖 Menyu")],
     ], resize_keyboard=True)
-
-
-def order_type_kb():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🥡 Olib ketish")],
-        [KeyboardButton(text="🪑 Joy buyurtma")],
-        [KeyboardButton(text="◀️ Orqaga")],
-    ], resize_keyboard=True)
-
-
-def rooms_kb(rooms):
-    free = [r for r in rooms if r["status"] == "free"]
-    buttons = [[KeyboardButton(text=f"🪑 {r['name']} ({r['capacity']} kishi)")] for r in free]
-    buttons.append([KeyboardButton(text="◀️ Orqaga")])
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
-
-def cats_kb(cats, has_cart=False):
-    buttons = [[KeyboardButton(text=f"📂 {c['name'].strip()}")] for c in cats]
-    if has_cart:
-        total_qty = 0
-        buttons.insert(0, [KeyboardButton(text="🛒 Savatim")])
-    buttons.append([KeyboardButton(text="◀️ Orqaga")])
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
-
-def products_kb(products, cart: dict):
-    buttons = []
-    for p in products:
-        pid = str(p["id"])
-        qty = cart.get(pid, {}).get("qty", 0)
-        name = p["name"].strip()
-        price = int(p["price"])
-        label = f"➕ {name} — {price:,} so'm"
-        if qty > 0:
-            label = f"✅ {name} ({qty} ta) — {price:,} so'm"
-        row = [KeyboardButton(text=label)]
-        if qty > 0:
-            row.append(KeyboardButton(text=f"➖ {name}"))
-        buttons.append(row)
-    if cart:
-        total = sum(v["price"] * v["qty"] for v in cart.values())
-        buttons.append([KeyboardButton(text=f"🛒 Savatim — {int(total):,} so'm")])
-    buttons.append([KeyboardButton(text="◀️ Kategoriyalar")])
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
 def phone_kb():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="📱 Raqamimni yuborish", request_contact=True)],
-        [KeyboardButton(text="◀️ Orqaga")],
+        [KeyboardButton(text="❌ Bekor qilish")],
     ], resize_keyboard=True)
 
 
 def note_kb():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="⏭ Izohsiz davom etish")],
-        [KeyboardButton(text="◀️ Orqaga")],
+        [KeyboardButton(text="❌ Bekor qilish")],
     ], resize_keyboard=True)
 
 
 def confirm_kb():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="✅ Tasdiqlash")],
-        [KeyboardButton(text="✏️ O'zgartirish"), KeyboardButton(text="❌ Bekor qilish")],
+        [KeyboardButton(text="❌ Bekor qilish")],
     ], resize_keyboard=True)
+
+
+# ══════════════════════════════════════════════
+# INLINE KEYBOARDS — menyu va savat tugmalar orqali
+# ══════════════════════════════════════════════
+def categories_inline(cats: list, cart: dict):
+    """Kategoriyalar ro'yxati + savat (agar bor bo'lsa)"""
+    kb = []
+    for c in cats:
+        kb.append([InlineKeyboardButton(
+            text=f"📂 {c['name'].strip()}",
+            callback_data=f"cat:{c['id']}"
+        )])
+    if cart:
+        total = sum(v["price"] * v["qty"] for v in cart.values())
+        qty = sum(v["qty"] for v in cart.values())
+        kb.append([InlineKeyboardButton(
+            text=f"🛒 Savat ({qty} ta) — {int(total):,} so'm",
+            callback_data="cart:view"
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def products_inline(products: list, cart: dict, cat_id: int):
+    """Mahsulotlar — har biri uchun nomi + qty + +/- tugmalari"""
+    kb = []
+    for p in products:
+        pid = str(p["id"])
+        qty = cart.get(pid, {}).get("qty", 0)
+        name = p["name"].strip()
+        price = int(p["price"])
+        # Asosiy qator: nom va narx
+        if qty == 0:
+            kb.append([InlineKeyboardButton(
+                text=f"➕ {name} — {price:,} so'm",
+                callback_data=f"add:{p['id']}"
+            )])
+        else:
+            kb.append([
+                InlineKeyboardButton(text=f"➖", callback_data=f"sub:{p['id']}"),
+                InlineKeyboardButton(text=f"{name} ({qty} ta)", callback_data="noop"),
+                InlineKeyboardButton(text=f"➕", callback_data=f"add:{p['id']}"),
+            ])
+    # Pastdagi navigatsiya
+    nav = []
+    if cart:
+        total = sum(v["price"] * v["qty"] for v in cart.values())
+        nav.append(InlineKeyboardButton(
+            text=f"🛒 Savat — {int(total):,} so'm",
+            callback_data="cart:view"
+        ))
+    nav.append(InlineKeyboardButton(text="◀️ Kategoriyalar", callback_data="cat:back"))
+    kb.append(nav)
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def cart_inline(cart: dict):
+    """Savat ichida har bir mahsulot uchun +/- va o'chirish"""
+    kb = []
+    for pid, item in cart.items():
+        kb.append([InlineKeyboardButton(
+            text=f"{item['name']} ({item['qty']} ta) — {int(item['price'] * item['qty']):,} so'm",
+            callback_data="noop"
+        )])
+        kb.append([
+            InlineKeyboardButton(text="➖", callback_data=f"sub:{pid}"),
+            InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"del:{pid}"),
+            InlineKeyboardButton(text="➕", callback_data=f"add:{pid}"),
+        ])
+    kb.append([InlineKeyboardButton(text="✅ Buyurtmani rasmiylashtirish", callback_data="cart:checkout")])
+    kb.append([
+        InlineKeyboardButton(text="◀️ Menyuga qaytish", callback_data="cat:back"),
+        InlineKeyboardButton(text="🗑 Tozalash", callback_data="cart:clear"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def admin_order_inline(order_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Qabul", callback_data=f"accept_{order_id}"),
-        InlineKeyboardButton(text="❌ Rad", callback_data=f"reject_{order_id}"),
+        InlineKeyboardButton(text="✅ Qabul qilish", callback_data=f"accept_{order_id}"),
+        InlineKeyboardButton(text="❌ Rad etish", callback_data=f"reject_{order_id}"),
     ]])
 
 
-# ── FORMATTERS ──
+# ══════════════════════════════════════════════
+# FORMATTERS
+# ══════════════════════════════════════════════
 def fmt_cart(cart: dict) -> str:
     if not cart:
-        return "🛒 Savat bo'sh"
+        return "🛒 Savatingiz bo'sh"
     lines = ["🛒 *Savatingiz:*\n"]
     total = 0
     for item in cart.values():
@@ -165,16 +199,14 @@ def fmt_cart(cart: dict) -> str:
     return "\n".join(lines)
 
 
-def fmt_admin_notify(order_id, cart, order_type, room_name, phone, note, customer_name, tenant_name):
-    type_text = f"🪑 Joy: {room_name}" if order_type == "dine_in" else "🥡 Olib ketish"
-    _name = customer_name or "Noma'lum"
+def fmt_admin_notify(order_id, cart, phone, note, customer_name, tenant_name):
     lines = [
         f"🔔 *Yangi buyurtma!*",
         f"🏪 {tenant_name}",
         f"━━━━━━━━━━━━━━━━━━",
         f"📋 Buyurtma *#{str(order_id).zfill(4)}*",
-        f"📍 {type_text}",
-        f"👤 {_name}",
+        f"🌐 Online (bot orqali)",
+        f"👤 {customer_name or 'Mehmon'}",
         f"📱 {phone}",
     ]
     if note:
@@ -208,17 +240,33 @@ def fmt_receipt(order_data, tenant_name):
     lines.append(f"💰 *JAMI: {int(order_data.get('total', 0)):,} so'm*")
     method_map = {"cash": "💵 Naqd", "card": "💳 Karta", "click": "📱 Click", "payme": "📱 Payme"}
     method = method_map.get(order_data.get("method", ""), order_data.get("method", ""))
-    lines.append(f"💳 To'lov: {method}")
+    if method:
+        lines.append(f"💳 To'lov: {method}")
     lines.append("━━━━━━━━━━━━━━━━━━")
     lines.append("✅ *Xaridingiz uchun rahmat!*")
     return "\n".join(lines)
 
 
-# ── DISPATCHER ──
+def fmt_status(status: str) -> str:
+    m = {
+        "new": "🆕 Yangi — ko'rib chiqilmoqda",
+        "confirmed": "✅ Tasdiqlandi",
+        "preparing": "👨‍🍳 Tayyorlanmoqda",
+        "ready": "🔔 Tayyor!",
+        "paid": "💚 To'landi",
+        "closed": "✔️ Yakunlangan",
+        "cancelled": "❌ Bekor qilindi"
+    }
+    return m.get(status, status)
+
+
+# ══════════════════════════════════════════════
+# DISPATCHER
+# ══════════════════════════════════════════════
 def create_dispatcher(tenant_id: int, tenant_name: str, admin_chat_id: str) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
-    # ── /start ──
+    # ─────── /start ───────
     @dp.message(CommandStart())
     async def start(msg: types.Message, state: FSMContext):
         await state.clear()
@@ -228,17 +276,416 @@ def create_dispatcher(tenant_id: int, tenant_name: str, admin_chat_id: str) -> D
             "full_name": msg.from_user.full_name or "",
             "username": msg.from_user.username or ""
         })
-        rooms = await api_get(f"/public/rooms?tenant_id={tenant_id}") or []
-        free = len([r for r in rooms if r["status"] == "free"])
         await msg.answer(
-            f"👋 Xush kelibsiz, *{msg.from_user.full_name or 'Mehmon'}*!\n\n"
-            f"🏪 *{tenant_name}*\n"
-            f"🪑 Bo'sh joylar: *{free} ta*\n\n"
-            f"Buyurtma berish uchun quyidagi tugmani bosing 👇",
+            f"👋 Assalomu alaykum, *{msg.from_user.full_name or 'Mehmon'}*!\n\n"
+            f"🏪 *{tenant_name}*\n\n"
+            f"Quyidagi tugmalardan foydalaning 👇",
             reply_markup=main_kb(), parse_mode="Markdown"
         )
 
-    # ── MENYU ──
+    # ─────── BUYURTMA BERISH ───────
+    @dp.message(F.text == "🍽 Buyurtma berish")
+    async def order_start(msg: types.Message, state: FSMContext):
+        cats = await api_get(f"/public/categories?tenant_id={tenant_id}") or []
+        if not cats:
+            await msg.answer("😔 Menyu hali sozlanmagan. Keyinroq qaytib keling.", reply_markup=main_kb())
+            return
+        await state.clear()
+        await state.update_data(cart={}, cats=cats)
+        await state.set_state(OrderState.browsing)
+        await msg.answer(
+            "📂 *Kategoriyani tanlang:*",
+            parse_mode="Markdown",
+            reply_markup=categories_inline(cats, {})
+        )
+
+    # ─────── KATEGORIYA TANLASH (inline) ───────
+    @dp.callback_query(F.data.startswith("cat:"), OrderState.browsing)
+    async def category_callback(call: types.CallbackQuery, state: FSMContext):
+        action = call.data.split(":", 1)[1]
+        data = await state.get_data()
+        cart = data.get("cart", {})
+
+        if action == "back":
+            cats = data.get("cats") or await api_get(f"/public/categories?tenant_id={tenant_id}") or []
+            await call.message.edit_text(
+                "📂 *Kategoriyani tanlang:*",
+                parse_mode="Markdown",
+                reply_markup=categories_inline(cats, cart)
+            )
+            await call.answer()
+            return
+
+        try:
+            cat_id = int(action)
+        except ValueError:
+            await call.answer("Noto'g'ri kategoriya")
+            return
+
+        prods = await api_get(f"/public/products?tenant_id={tenant_id}&category_id={cat_id}") or []
+        if not prods:
+            await call.answer("😔 Bu kategoriyada mahsulot yo'q", show_alert=True)
+            return
+
+        # Mahsulotlarni state'ga saqlaymiz (keyin ID orqali topish uchun)
+        prod_map = {str(p["id"]): {"name": p["name"].strip(), "price": p["price"]} for p in prods}
+        all_products = data.get("all_products", {})
+        all_products.update(prod_map)
+        await state.update_data(all_products=all_products, cur_cat=cat_id)
+
+        await call.message.edit_text(
+            f"🍽 *Mahsulotlar:*\n\n_➕ tugmasi orqali qo'shing_",
+            parse_mode="Markdown",
+            reply_markup=products_inline(prods, cart, cat_id)
+        )
+        await call.answer()
+
+    # ─────── MAHSULOT QO'SHISH ───────
+    @dp.callback_query(F.data.startswith("add:"), OrderState.browsing)
+    async def add_product(call: types.CallbackQuery, state: FSMContext):
+        pid = call.data.split(":", 1)[1]
+        data = await state.get_data()
+        all_products = data.get("all_products", {})
+
+        if pid not in all_products:
+            await call.answer("Mahsulot topilmadi")
+            return
+
+        cart = data.get("cart", {})
+        if pid in cart:
+            cart[pid]["qty"] += 1
+        else:
+            cart[pid] = {
+                "name": all_products[pid]["name"],
+                "price": all_products[pid]["price"],
+                "qty": 1
+            }
+        await state.update_data(cart=cart)
+
+        # Joriy kategoriyani qayta ko'rsatish
+        cur_cat = data.get("cur_cat")
+        if cur_cat:
+            prods = await api_get(f"/public/products?tenant_id={tenant_id}&category_id={cur_cat}") or []
+            try:
+                await call.message.edit_reply_markup(reply_markup=products_inline(prods, cart, cur_cat))
+            except Exception:
+                pass
+
+        await call.answer(f"✅ {all_products[pid]['name']} qo'shildi")
+
+    # ─────── MAHSULOT KAMAYTIRISH ───────
+    @dp.callback_query(F.data.startswith("sub:"), OrderState.browsing)
+    async def sub_product(call: types.CallbackQuery, state: FSMContext):
+        pid = call.data.split(":", 1)[1]
+        data = await state.get_data()
+        cart = data.get("cart", {})
+
+        if pid not in cart:
+            await call.answer("Savatda yo'q")
+            return
+
+        cart[pid]["qty"] -= 1
+        name = cart[pid]["name"]
+        if cart[pid]["qty"] <= 0:
+            del cart[pid]
+        await state.update_data(cart=cart)
+
+        # Qayerda turganini tekshirish — savatdami yoki mahsulotlarda
+        # Ko'rsatilayotgan xabarni yangilash
+        cur_cat = data.get("cur_cat")
+        # Agar savatda turibmi (call.message tarkibiga qarash kerak)
+        msg_text = call.message.text or ""
+        try:
+            if "Savat" in msg_text and not cart:
+                # Savat bo'sh bo'lib qoldi → kategoriyalarga qaytaramiz
+                cats = data.get("cats") or await api_get(f"/public/categories?tenant_id={tenant_id}") or []
+                await call.message.edit_text(
+                    "🛒 Savat bo'sh bo'lib qoldi.\n\n📂 *Kategoriyani tanlang:*",
+                    parse_mode="Markdown",
+                    reply_markup=categories_inline(cats, {})
+                )
+            elif "Savat" in msg_text:
+                # Savat ekranini yangilash
+                await call.message.edit_text(
+                    fmt_cart(cart),
+                    parse_mode="Markdown",
+                    reply_markup=cart_inline(cart)
+                )
+            elif cur_cat:
+                prods = await api_get(f"/public/products?tenant_id={tenant_id}&category_id={cur_cat}") or []
+                await call.message.edit_reply_markup(reply_markup=products_inline(prods, cart, cur_cat))
+        except Exception as e:
+            logger.error(f"sub edit: {e}")
+
+        await call.answer(f"➖ {name}")
+
+    # ─────── MAHSULOTNI BUTUNLAY O'CHIRISH ───────
+    @dp.callback_query(F.data.startswith("del:"), OrderState.browsing)
+    async def del_product(call: types.CallbackQuery, state: FSMContext):
+        pid = call.data.split(":", 1)[1]
+        data = await state.get_data()
+        cart = data.get("cart", {})
+
+        if pid not in cart:
+            await call.answer("Savatda yo'q")
+            return
+
+        name = cart[pid]["name"]
+        del cart[pid]
+        await state.update_data(cart=cart)
+
+        if not cart:
+            cats = data.get("cats") or await api_get(f"/public/categories?tenant_id={tenant_id}") or []
+            await call.message.edit_text(
+                "🛒 Savat bo'sh bo'lib qoldi.\n\n📂 *Kategoriyani tanlang:*",
+                parse_mode="Markdown",
+                reply_markup=categories_inline(cats, {})
+            )
+        else:
+            await call.message.edit_text(
+                fmt_cart(cart),
+                parse_mode="Markdown",
+                reply_markup=cart_inline(cart)
+            )
+        await call.answer(f"🗑 {name} o'chirildi")
+
+    # ─────── SAVATNI KO'RISH ───────
+    @dp.callback_query(F.data == "cart:view", OrderState.browsing)
+    async def view_cart(call: types.CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        cart = data.get("cart", {})
+        if not cart:
+            await call.answer("Savat bo'sh", show_alert=True)
+            return
+        await call.message.edit_text(
+            fmt_cart(cart),
+            parse_mode="Markdown",
+            reply_markup=cart_inline(cart)
+        )
+        await call.answer()
+
+    # ─────── SAVATNI TOZALASH ───────
+    @dp.callback_query(F.data == "cart:clear", OrderState.browsing)
+    async def clear_cart(call: types.CallbackQuery, state: FSMContext):
+        await state.update_data(cart={})
+        cats = (await state.get_data()).get("cats") or await api_get(f"/public/categories?tenant_id={tenant_id}") or []
+        await call.message.edit_text(
+            "🗑 Savat tozalandi.\n\n📂 *Kategoriyani tanlang:*",
+            parse_mode="Markdown",
+            reply_markup=categories_inline(cats, {})
+        )
+        await call.answer("Savat tozalandi")
+
+    # ─────── BUYURTMANI RASMIYLASH ───────
+    @dp.callback_query(F.data == "cart:checkout", OrderState.browsing)
+    async def checkout(call: types.CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        cart = data.get("cart", {})
+        if not cart:
+            await call.answer("Savat bo'sh!", show_alert=True)
+            return
+        await state.set_state(OrderState.entering_phone)
+        await call.message.edit_text(
+            fmt_cart(cart) + "\n\n📱 *Telefon raqamingizni yuboring*",
+            parse_mode="Markdown"
+        )
+        await call.message.answer(
+            "Pastdagi tugma orqali raqamni yuboring yoki qo'lda yozing:",
+            reply_markup=phone_kb()
+        )
+        await call.answer()
+
+    @dp.callback_query(F.data == "noop")
+    async def noop(call: types.CallbackQuery):
+        await call.answer()
+
+    # ─────── TELEFON (kontakt) ───────
+    @dp.message(F.contact, OrderState.entering_phone)
+    async def phone_contact(msg: types.Message, state: FSMContext):
+        phone = msg.contact.phone_number
+        if not phone.startswith("+"):
+            phone = "+" + phone
+        await state.update_data(phone=phone)
+        await state.set_state(OrderState.entering_note)
+        await msg.answer("💬 *Izoh qoldiring* yoki tugmani bosing:", parse_mode="Markdown", reply_markup=note_kb())
+
+    # ─────── TELEFON (matn) ───────
+    @dp.message(OrderState.entering_phone)
+    async def phone_text(msg: types.Message, state: FSMContext):
+        if msg.text == "❌ Bekor qilish":
+            await state.clear()
+            await msg.answer("❌ Buyurtma bekor qilindi.", reply_markup=main_kb())
+            return
+        phone = (msg.text or "").strip().replace(" ", "")
+        if len(phone) < 9:
+            await msg.answer("❌ Noto'g'ri raqam. Qaytadan kiriting yoki tugma orqali yuboring:")
+            return
+        await state.update_data(phone=phone)
+        await state.set_state(OrderState.entering_note)
+        await msg.answer("💬 *Izoh qoldiring* yoki tugmani bosing:", parse_mode="Markdown", reply_markup=note_kb())
+
+    # ─────── IZOH ───────
+    @dp.message(F.text == "⏭ Izohsiz davom etish", OrderState.entering_note)
+    async def skip_note(msg: types.Message, state: FSMContext):
+        await state.update_data(note="")
+        await _show_confirm(msg, state)
+
+    @dp.message(F.text == "❌ Bekor qilish", OrderState.entering_note)
+    async def cancel_at_note(msg: types.Message, state: FSMContext):
+        await state.clear()
+        await msg.answer("❌ Buyurtma bekor qilindi.", reply_markup=main_kb())
+
+    @dp.message(OrderState.entering_note)
+    async def enter_note(msg: types.Message, state: FSMContext):
+        await state.update_data(note=(msg.text or "").strip())
+        await _show_confirm(msg, state)
+
+    async def _show_confirm(msg, state):
+        data = await state.get_data()
+        cart = data.get("cart", {})
+        phone = data.get("phone", "")
+        note = data.get("note", "")
+        note_text = f"\n💬 Izoh: {note}" if note else ""
+        await state.set_state(OrderState.confirming)
+        await msg.answer(
+            f"📋 *Buyurtmangizni tasdiqlang:*\n\n"
+            f"📱 {phone}{note_text}\n\n"
+            f"{fmt_cart(cart)}\n\n"
+            f"Hammasi to'g'rimi?",
+            parse_mode="Markdown", reply_markup=confirm_kb()
+        )
+
+    # ─────── TASDIQLASH ───────
+    @dp.message(F.text == "✅ Tasdiqlash", OrderState.confirming)
+    async def confirm_order(msg: types.Message, state: FSMContext):
+        data = await state.get_data()
+        await msg.answer("⏳ Buyurtma yuborilmoqda...", reply_markup=ReplyKeyboardRemove())
+
+        # MUHIM: order_type doim "bot" — admin keyin o'zi tartibga soladi
+        result = await api_post("/public/bot-order", {
+            "tenant_id": tenant_id,
+            "order_type": "bot",
+            "room_id": None,
+            "customer_name": msg.from_user.full_name or "",
+            "customer_phone": data.get("phone", ""),
+            "note": data.get("note", ""),
+            "cart": {pid: v["qty"] for pid, v in data.get("cart", {}).items()},
+            "bot_chat_id": msg.from_user.id,
+            "username": msg.from_user.username or ""
+        })
+
+        if result:
+            order_id = result.get("id", 0)
+            total = result.get("total", 0)
+            await msg.answer(
+                f"✅ *Buyurtma qabul qilindi!*\n\n"
+                f"📋 Buyurtma raqami: *#{str(order_id).zfill(4)}*\n"
+                f"💰 Jami: *{int(total):,} so'm*\n\n"
+                f"⏳ Admin ko'rib chiqmoqda. Tasdiqlangach xabar beramiz.\n\n"
+                f"📋 *Buyurtmalarim* tugmasi orqali holatni kuzatib turing.",
+                parse_mode="Markdown", reply_markup=main_kb()
+            )
+            # Admin ga xabar
+            if admin_chat_id:
+                bot_entry = next(
+                    (v for v in active_bots.values() if v["tenant_id"] == tenant_id),
+                    None
+                )
+                if bot_entry:
+                    try:
+                        await bot_entry["bot"].send_message(
+                            chat_id=int(admin_chat_id),
+                            text=fmt_admin_notify(
+                                order_id,
+                                data.get("cart", {}),
+                                data.get("phone", ""),
+                                data.get("note", ""),
+                                msg.from_user.full_name or "",
+                                tenant_name
+                            ),
+                            reply_markup=admin_order_inline(order_id),
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        logger.error(f"Admin ga xabar: {e}")
+        else:
+            await msg.answer("❌ Xato yuz berdi. Qaytadan urinib ko'ring.", reply_markup=main_kb())
+        await state.clear()
+
+    @dp.message(F.text == "❌ Bekor qilish", OrderState.confirming)
+    async def cancel_order(msg: types.Message, state: FSMContext):
+        await state.clear()
+        await msg.answer("❌ Buyurtma bekor qilindi.", reply_markup=main_kb())
+
+    # ─────── BUYURTMALARIM (tugmalar bilan) ───────
+    @dp.message(F.text == "📋 Buyurtmalarim")
+    async def my_orders(msg: types.Message):
+        # Foydalanuvchining oxirgi buyurtmalarini olamiz
+        orders = await api_get(f"/public/my-orders?tenant_id={tenant_id}&chat_id={msg.from_user.id}") or []
+        if not orders:
+            await msg.answer(
+                "📭 Sizda hali buyurtma yo'q.\n\n"
+                "🍽 *Buyurtma berish* tugmasi orqali yangi buyurtma bera olasiz.",
+                parse_mode="Markdown",
+                reply_markup=main_kb()
+            )
+            return
+
+        # Inline tugmalar — har bir buyurtma uchun
+        kb = []
+        for o in orders[:10]:  # eng oxirgi 10 ta
+            oid = o.get("id", 0)
+            status = o.get("status", "")
+            total = int(o.get("total", 0))
+            kb.append([InlineKeyboardButton(
+                text=f"#{str(oid).zfill(4)} • {fmt_status(status)} • {total:,} so'm",
+                callback_data=f"order:{oid}"
+            )])
+
+        await msg.answer(
+            "📋 *Sizning buyurtmalaringiz:*\n\n_Batafsil ko'rish uchun bosing 👇_",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+        )
+
+    @dp.callback_query(F.data.startswith("order:"))
+    async def order_detail(call: types.CallbackQuery):
+        try:
+            oid = int(call.data.split(":")[1])
+        except (ValueError, IndexError):
+            await call.answer("Xato")
+            return
+
+        order = await api_get(f"/public/order-detail/{oid}")
+        if not order:
+            await call.answer("Buyurtma topilmadi", show_alert=True)
+            return
+
+        lines = [
+            f"📋 *Buyurtma #{str(oid).zfill(4)}*",
+            f"━━━━━━━━━━━━━━━━━━",
+            f"Holat: {fmt_status(order.get('status', ''))}",
+        ]
+        items = order.get("items") or []
+        if items:
+            lines.append("")
+            for it in items:
+                lines.append(
+                    f"• {it.get('product_name', '')} × {int(it.get('quantity', 0))} = "
+                    f"{int(it.get('total_price', 0)):,} so'm"
+                )
+        lines.append(f"━━━━━━━━━━━━━━━━━━")
+        lines.append(f"💰 *Jami: {int(order.get('total', 0)):,} so'm*")
+        if order.get("note"):
+            lines.append(f"💬 Izoh: {order['note']}")
+
+        try:
+            await call.message.edit_text("\n".join(lines), parse_mode="Markdown")
+        except Exception:
+            await call.message.answer("\n".join(lines), parse_mode="Markdown")
+        await call.answer()
+
+    # ─────── MENYU (umumiy ko'rish) ───────
     @dp.message(F.text == "📖 Menyu")
     async def show_menu(msg: types.Message):
         cats = await api_get(f"/public/categories?tenant_id={tenant_id}") or []
@@ -251,454 +698,68 @@ def create_dispatcher(tenant_id: int, tenant_name: str, admin_chat_id: str) -> D
             if prods:
                 text.append(f"\n*{cat['name'].strip()}:*")
                 for p in prods:
-                    unit_map = {"piece": "dona", "kg": "kg", "gram": "gr", "liter": "l", "ml": "ml", "portion": "porsiya"}
-                    unit = unit_map.get(p.get("unit", ""), "")
-                    text.append(f"• {p['name'].strip()} — {int(p['price']):,} so'm/{unit}")
-        await msg.answer("\n".join(text), parse_mode="Markdown", reply_markup=main_kb())
+                    text.append(f"• {p['name'].strip()} — {int(p['price']):,} so'm")
+        # Telegram limit
+        full = "\n".join(text)
+        if len(full) > 4000:
+            full = full[:3990] + "...\n\n_Davomi uchun buyurtma berish tugmasini bosing._"
+        await msg.answer(full, parse_mode="Markdown", reply_markup=main_kb())
 
-    # ── BUYURTMALARIM ──
-    @dp.message(F.text == "📋 Buyurtmalarim")
-    async def my_orders(msg: types.Message):
-        await msg.answer(
-            "Buyurtma holatini ko'rish:\n/status <raqam>\n\nMasalan: /status 42",
-            reply_markup=main_kb()
-        )
-
-    @dp.message(Command("status"))
-    async def check_status(msg: types.Message):
-        args = msg.text.split()
-        if len(args) < 2:
-            await msg.answer("Foydalanish: /status 42")
-            return
-        try:
-            order_id = int(args[1])
-        except ValueError:
-            await msg.answer("❌ Raqam noto'g'ri.")
-            return
-        result = await api_get(f"/public/order-status/{order_id}")
-        if not result:
-            await msg.answer("❌ Buyurtma topilmadi.")
-            return
-        status_map = {
-            "new": "🆕 Yangi — ko'rib chiqilmoqda",
-            "confirmed": "✅ Tasdiqlandi",
-            "preparing": "👨‍🍳 Tayyorlanmoqda",
-            "ready": "🔔 Tayyor!",
-            "paid": "💚 To'landi",
-            "cancelled": "❌ Bekor qilindi"
-        }
-        st = status_map.get(result.get("status", ""), result.get("status", ""))
-        await msg.answer(
-            f"📋 *Buyurtma #{str(order_id).zfill(4)}*\n\n"
-            f"Holat: {st}\n"
-            f"Summa: *{int(result.get('total', 0)):,} so'm*",
-            parse_mode="Markdown"
-        )
-
-    # ── BUYURTMA BOSHLASH ──
-    @dp.message(F.text == "📦 Buyurtma berish")
-    async def order_start(msg: types.Message, state: FSMContext):
-        await state.clear()
-        await state.set_state(OrderState.choosing_type)
-        await msg.answer("Buyurtma turini tanlang:", reply_markup=order_type_kb())
-
-    # ── ORQAGA ──
-    @dp.message(F.text == "◀️ Orqaga")
-    async def go_back(msg: types.Message, state: FSMContext):
-        cur = await state.get_state()
-        if cur == OrderState.choosing_type:
-            await state.clear()
-            await msg.answer("Asosiy menyu:", reply_markup=main_kb())
-        elif cur == OrderState.choosing_room:
-            await state.set_state(OrderState.choosing_type)
-            await msg.answer("Buyurtma turini tanlang:", reply_markup=order_type_kb())
-        elif cur == OrderState.choosing_cat:
-            data = await state.get_data()
-            if data.get("order_type") == "dine_in":
-                rooms = await api_get(f"/public/rooms?tenant_id={tenant_id}") or []
-                await state.set_state(OrderState.choosing_room)
-                await msg.answer("Xona tanlang:", reply_markup=rooms_kb(rooms))
-            else:
-                await state.set_state(OrderState.choosing_type)
-                await msg.answer("Buyurtma turini tanlang:", reply_markup=order_type_kb())
-        elif cur == OrderState.choosing_prod:
-            data = await state.get_data()
-            cats = await api_get(f"/public/categories?tenant_id={tenant_id}") or []
-            cart = data.get("cart", {})
-            await state.set_state(OrderState.choosing_cat)
-            await msg.answer("Kategoriya tanlang:", reply_markup=cats_kb(cats, bool(cart)))
-        elif cur == OrderState.viewing_cart:
-            data = await state.get_data()
-            cats = await api_get(f"/public/categories?tenant_id={tenant_id}") or []
-            cart = data.get("cart", {})
-            await state.set_state(OrderState.choosing_cat)
-            await msg.answer("Kategoriya tanlang:", reply_markup=cats_kb(cats, bool(cart)))
-        elif cur == OrderState.entering_phone:
-            data = await state.get_data()
-            cart = data.get("cart", {})
-            await state.set_state(OrderState.viewing_cart)
-            await msg.answer(fmt_cart(cart), parse_mode="Markdown",
-                             reply_markup=_cart_action_kb())
-        elif cur == OrderState.entering_note:
-            await state.set_state(OrderState.entering_phone)
-            await msg.answer("📱 Telefon raqamingizni yuboring:", reply_markup=phone_kb())
-        elif cur == OrderState.confirming:
-            await state.set_state(OrderState.entering_note)
-            await msg.answer("💬 Izoh qoldiring yoki o'tkazib yuboring:", reply_markup=note_kb())
-        else:
-            await state.clear()
-            await msg.answer("Asosiy menyu:", reply_markup=main_kb())
-
-    def _cart_action_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="✅ Buyurtmani rasmiylashtirish")],
-            [KeyboardButton(text="➕ Mahsulot qo'shish"), KeyboardButton(text="🗑 Tozalash")],
-            [KeyboardButton(text="◀️ Orqaga")],
-        ], resize_keyboard=True)
-
-    # ── OLIB KETISH ──
-    @dp.message(F.text == "🥡 Olib ketish", OrderState.choosing_type)
-    async def takeaway(msg: types.Message, state: FSMContext):
-        cats = await api_get(f"/public/categories?tenant_id={tenant_id}") or []
-        if not cats:
-            await msg.answer("😔 Menyu sozlanmagan.", reply_markup=main_kb())
-            await state.clear()
-            return
-        await state.update_data(order_type="takeaway", room_id=None, room_name="", cart={})
-        await state.set_state(OrderState.choosing_cat)
-        await msg.answer("📂 Kategoriya tanlang:", reply_markup=cats_kb(cats))
-
-    # ── JOY BUYURTMA ──
-    @dp.message(F.text == "🪑 Joy buyurtma", OrderState.choosing_type)
-    async def dine_in(msg: types.Message, state: FSMContext):
-        rooms = await api_get(f"/public/rooms?tenant_id={tenant_id}") or []
-        free = [r for r in rooms if r["status"] == "free"]
-        if not free:
-            await msg.answer("😔 Hozir bo'sh joy yo'q.", reply_markup=order_type_kb())
-            return
-        await state.update_data(order_type="dine_in", rooms=rooms, cart={})
-        await state.set_state(OrderState.choosing_room)
-        await msg.answer(
-            f"🪑 Bo'sh joylar: *{len(free)} ta*\nXona tanlang:",
-            reply_markup=rooms_kb(rooms), parse_mode="Markdown"
-        )
-
-    # ── XONA TANLASH ──
-    @dp.message(F.text.startswith("🪑 "), OrderState.choosing_room)
-    async def room_selected(msg: types.Message, state: FSMContext):
-        data = await state.get_data()
-        room_name = msg.text.replace("🪑 ", "").split(" (")[0].strip()
-        room = next((r for r in data.get("rooms", []) if r["name"] == room_name), None)
-        if not room:
-            await msg.answer("❌ Xona topilmadi.")
-            return
-        cats = await api_get(f"/public/categories?tenant_id={tenant_id}") or []
-        await state.update_data(room_id=room["id"], room_name=room["name"], cart={})
-        await state.set_state(OrderState.choosing_cat)
-        await msg.answer(
-            f"✅ *{room['name']}* tanlandi.\n📂 Kategoriya tanlang:",
-            reply_markup=cats_kb(cats), parse_mode="Markdown"
-        )
-
-    # ── KATEGORIYA TANLASH ──
-    @dp.message(F.text.startswith("📂 "))
-    async def cat_selected(msg: types.Message, state: FSMContext):
-        cur = await state.get_state()
-        if cur not in [OrderState.choosing_cat, OrderState.choosing_prod]:
-            return
-        cat_name = msg.text.replace("📂 ", "").strip()
-        cats = await api_get(f"/public/categories?tenant_id={tenant_id}") or []
-        cat = next((c for c in cats if c["name"].strip() == cat_name), None)
-        if not cat:
-            await msg.answer("❌ Kategoriya topilmadi. Qaytadan urinib ko'ring.")
-            return
-        prods = await api_get(f"/public/products?tenant_id={tenant_id}&category_id={cat['id']}") or []
-        if not prods:
-            data = await state.get_data()
-            cart = data.get("cart", {})
-            await msg.answer(
-                f"😔 *{cat_name}* kategoriyasida mahsulot yo'q.",
-                parse_mode="Markdown",
-                reply_markup=cats_kb(cats, bool(cart))
-            )
-            return
-        data = await state.get_data()
-        cart = data.get("cart", {})
-        await state.update_data(products=prods, cur_cat=cat_name)
-        await state.set_state(OrderState.choosing_prod)
-        await msg.answer(
-            f"📂 *{cat_name}*\nMahsulot tanlang:",
-            reply_markup=products_kb(prods, cart), parse_mode="Markdown"
-        )
-
-    # ── MAHSULOT QO'SHISH ──
-    @dp.message(F.text.startswith("➕ "))
-    async def prod_add(msg: types.Message, state: FSMContext):
-        cur = await state.get_state()
-        if cur not in [OrderState.choosing_prod]:
-            return
-        data = await state.get_data()
-        raw = msg.text.replace("➕ ", "").replace("✅ ", "")
-        pname = raw.split(" — ")[0].split(" (")[0].strip()
-        prod = next((p for p in data.get("products", []) if p["name"].strip() == pname), None)
-        if not prod:
-            return
-        cart = data.get("cart", {})
-        pid = str(prod["id"])
-        if pid in cart:
-            cart[pid]["qty"] += 1
-        else:
-            cart[pid] = {"name": prod["name"].strip(), "price": prod["price"], "qty": 1}
-        await state.update_data(cart=cart)
-        total = sum(v["price"] * v["qty"] for v in cart.values())
-        await msg.answer(
-            f"✅ *{prod['name'].strip()}* qo'shildi!\n"
-            f"🛒 {len(cart)} xil mahsulot | 💰 *{int(total):,}* so'm",
-            parse_mode="Markdown",
-            reply_markup=products_kb(data.get("products", []), cart)
-        )
-
-    # ── MAHSULOT OLIB TASHLASH ──
-    @dp.message(F.text.startswith("➖ "))
-    async def prod_remove(msg: types.Message, state: FSMContext):
-        cur = await state.get_state()
-        if cur != OrderState.choosing_prod:
-            return
-        data = await state.get_data()
-        pname = msg.text.replace("➖ ", "").strip()
-        cart = data.get("cart", {})
-        prod = next((p for p in data.get("products", []) if p["name"].strip() == pname), None)
-        if not prod:
-            return
-        pid = str(prod["id"])
-        if pid in cart:
-            cart[pid]["qty"] -= 1
-            if cart[pid]["qty"] <= 0:
-                del cart[pid]
-        await state.update_data(cart=cart)
-        await msg.answer(
-            f"➖ *{pname}* kamaytirildi.",
-            parse_mode="Markdown",
-            reply_markup=products_kb(data.get("products", []), cart)
-        )
-
-    # ── KATEGORIYALARGA ORQAGA ──
-    @dp.message(F.text == "◀️ Kategoriyalar")
-    async def back_to_cats(msg: types.Message, state: FSMContext):
-        data = await state.get_data()
-        cats = await api_get(f"/public/categories?tenant_id={tenant_id}") or []
-        cart = data.get("cart", {})
-        await state.set_state(OrderState.choosing_cat)
-        await msg.answer("📂 Kategoriya tanlang:", reply_markup=cats_kb(cats, bool(cart)))
-
-    # ── SAVATNI KO'RISH ──
-    @dp.message(F.text.startswith("🛒 Savatim"))
-    async def view_cart(msg: types.Message, state: FSMContext):
-        data = await state.get_data()
-        cart = data.get("cart", {})
-        await state.set_state(OrderState.viewing_cart)
-        await msg.answer(fmt_cart(cart), parse_mode="Markdown", reply_markup=_cart_action_kb())
-
-    # ── MAHSULOT QO'SHISH (savat ekranidan) ──
-    @dp.message(F.text == "➕ Mahsulot qo'shish", OrderState.viewing_cart)
-    async def add_more(msg: types.Message, state: FSMContext):
-        data = await state.get_data()
-        cats = await api_get(f"/public/categories?tenant_id={tenant_id}") or []
-        cart = data.get("cart", {})
-        await state.set_state(OrderState.choosing_cat)
-        await msg.answer("📂 Kategoriya tanlang:", reply_markup=cats_kb(cats, bool(cart)))
-
-    # ── SAVATNI TOZALASH ──
-    @dp.message(F.text == "🗑 Tozalash", OrderState.viewing_cart)
-    async def clear_cart(msg: types.Message, state: FSMContext):
-        await state.update_data(cart={})
-        cats = await api_get(f"/public/categories?tenant_id={tenant_id}") or []
-        await state.set_state(OrderState.choosing_cat)
-        await msg.answer("🗑 Savat tozalandi. Kategoriya tanlang:", reply_markup=cats_kb(cats))
-
-    # ── BUYURTMANI RASMIYLASH ──
-    @dp.message(F.text == "✅ Buyurtmani rasmiylashtirish", OrderState.viewing_cart)
-    async def go_phone(msg: types.Message, state: FSMContext):
-        data = await state.get_data()
-        if not data.get("cart"):
-            await msg.answer("❌ Savat bo'sh! Avval mahsulot tanlang.")
-            return
-        await state.set_state(OrderState.entering_phone)
-        await msg.answer("📱 Telefon raqamingizni yuboring:", reply_markup=phone_kb())
-
-    # ── TELEFON (KONTAKT) ──
-    @dp.message(F.contact, OrderState.entering_phone)
-    async def phone_contact(msg: types.Message, state: FSMContext):
-        phone = msg.contact.phone_number
-        if not phone.startswith("+"):
-            phone = "+" + phone
-        await state.update_data(phone=phone)
-        await state.set_state(OrderState.entering_note)
-        await msg.answer("💬 Izoh qoldiring yoki o'tkazib yuboring:", reply_markup=note_kb())
-
-    # ── TELEFON (MATN) ──
-    @dp.message(OrderState.entering_phone)
-    async def phone_text(msg: types.Message, state: FSMContext):
-        if msg.text == "◀️ Orqaga":
-            data = await state.get_data()
-            cart = data.get("cart", {})
-            await state.set_state(OrderState.viewing_cart)
-            await msg.answer(fmt_cart(cart), parse_mode="Markdown", reply_markup=_cart_action_kb())
-            return
-        phone = msg.text.strip().replace(" ", "")
-        if len(phone) < 9:
-            await msg.answer("❌ Noto'g'ri raqam. Qaytadan kiriting:")
-            return
-        await state.update_data(phone=phone)
-        await state.set_state(OrderState.entering_note)
-        await msg.answer("💬 Izoh qoldiring yoki o'tkazib yuboring:", reply_markup=note_kb())
-
-    # ── IZOH ──
-    @dp.message(F.text == "⏭ Izohsiz davom etish", OrderState.entering_note)
-    async def skip_note(msg: types.Message, state: FSMContext):
-        await state.update_data(note="")
-        await _show_confirm(msg, state)
-
-    @dp.message(OrderState.entering_note)
-    async def enter_note(msg: types.Message, state: FSMContext):
-        if msg.text == "◀️ Orqaga":
-            await state.set_state(OrderState.entering_phone)
-            await msg.answer("📱 Telefon raqamingizni yuboring:", reply_markup=phone_kb())
-            return
-        await state.update_data(note=msg.text.strip())
-        await _show_confirm(msg, state)
-
-    async def _show_confirm(msg, state):
-        data = await state.get_data()
-        cart = data.get("cart", {})
-        order_type = data.get("order_type", "takeaway")
-        room_name = data.get("room_name", "")
-        phone = data.get("phone", "")
-        note = data.get("note", "")
-        type_text = f"🪑 Joy: {room_name}" if order_type == "dine_in" else "🥡 Olib ketish"
-        note_text = f"\n💬 Izoh: {note}" if note else ""
-        await state.set_state(OrderState.confirming)
-        await msg.answer(
-            f"📋 *Buyurtmangizni tasdiqlang:*\n\n"
-            f"📍 {type_text}\n"
-            f"📱 {phone}{note_text}\n\n"
-            f"{fmt_cart(cart)}\n\n"
-            f"Tasdiqlaysizmi?",
-            parse_mode="Markdown", reply_markup=confirm_kb()
-        )
-
-    # ── TASDIQLASH ──
-    @dp.message(F.text == "✅ Tasdiqlash", OrderState.confirming)
-    async def confirm_order(msg: types.Message, state: FSMContext):
-        data = await state.get_data()
-        await msg.answer("⏳ Buyurtma yuborilmoqda...", reply_markup=ReplyKeyboardRemove())
-        result = await api_post("/public/bot-order", {
-            "tenant_id": tenant_id,
-            "order_type": data.get("order_type", "bot"),
-            "room_id": data.get("room_id"),
-            "customer_name": msg.from_user.full_name or "",
-            "customer_phone": data.get("phone", ""),
-            "note": data.get("note", ""),
-            "cart": {pid: v["qty"] for pid, v in data.get("cart", {}).items()},
-            "bot_chat_id": msg.from_user.id,
-            "username": msg.from_user.username or ""
-        })
-        if result:
-            order_id = result.get("id", 0)
-            total = result.get("total", 0)
-            type_text = f"🪑 {data.get('room_name', '')}" if data.get("order_type") == "dine_in" else "🥡 Olib ketish"
-            await msg.answer(
-                f"✅ *Buyurtma qabul qilindi!*\n\n"
-                f"📋 Buyurtma *#{str(order_id).zfill(4)}*\n"
-                f"📍 {type_text}\n"
-                f"💰 *{int(total):,} so'm*\n\n"
-                f"⏳ Admin ko'rib chiqmoqda...\n"
-                f"Holat: /status {order_id}",
-                parse_mode="Markdown", reply_markup=main_kb()
-            )
-            # Admin ga xabar
-            if admin_chat_id:
-                from aiogram import Bot as AiogramBot
-                bot_entry = active_bots.get(
-                    next((t for t in active_bots if active_bots[t]["tenant_id"] == tenant_id), None)
-                )
-                if bot_entry:
-                    try:
-                        await bot_entry["bot"].send_message(
-                            chat_id=int(admin_chat_id),
-                            text=fmt_admin_notify(
-                                order_id,
-                                data.get("cart", {}),
-                                data.get("order_type", ""),
-                                data.get("room_name", ""),
-                                data.get("phone", ""),
-                                data.get("note", ""),
-                                msg.from_user.full_name or "",
-                                tenant_name
-                            ),
-                            reply_markup=admin_order_inline(order_id),
-                            parse_mode="Markdown"
-                        )
-                    except Exception as e:
-                        logger.error(f"Admin ga xabar yuborishda xato: {e}")
-        else:
-            await msg.answer("❌ Xato yuz berdi. Qaytadan urinib ko'ring.", reply_markup=main_kb())
-        await state.clear()
-
-    # ── O'ZGARTIRISH ──
-    @dp.message(F.text == "✏️ O'zgartirish", OrderState.confirming)
-    async def edit_order(msg: types.Message, state: FSMContext):
-        data = await state.get_data()
-        cart = data.get("cart", {})
-        await state.set_state(OrderState.viewing_cart)
-        await msg.answer(fmt_cart(cart), parse_mode="Markdown", reply_markup=_cart_action_kb())
-
-    # ── BEKOR QILISH ──
-    @dp.message(F.text == "❌ Bekor qilish", OrderState.confirming)
-    async def cancel_order(msg: types.Message, state: FSMContext):
-        await state.clear()
-        await msg.answer("❌ Buyurtma bekor qilindi.", reply_markup=main_kb())
-
-    # ── ADMIN INLINE: QABUL / RAD ──
+    # ─────── ADMIN: QABUL QILISH ───────
     @dp.callback_query(F.data.startswith("accept_"))
     async def admin_accept(call: types.CallbackQuery):
-        order_id = int(call.data.split("_")[1])
-        result = await api_post(f"/public/update-order-status", {
+        try:
+            order_id = int(call.data.split("_")[1])
+        except (ValueError, IndexError):
+            await call.answer("Xato")
+            return
+        result = await api_post("/public/update-order-status", {
             "order_id": order_id,
             "status": "confirmed",
             "tenant_id": tenant_id
         })
         if result:
-            await call.message.edit_text(
-                call.message.text + f"\n\n✅ *Qabul qilindi* — {call.from_user.full_name}",
-                parse_mode="Markdown", reply_markup=None
-            )
-            await call.answer("✅ Buyurtma qabul qilindi!")
+            try:
+                await call.message.edit_text(
+                    (call.message.text or "") + f"\n\n✅ *Qabul qilindi*",
+                    parse_mode="Markdown", reply_markup=None
+                )
+            except Exception:
+                pass
+            await call.answer("✅ Qabul qilindi")
         else:
-            await call.answer("❌ Xato yuz berdi!")
+            await call.answer("❌ Xato yuz berdi", show_alert=True)
 
+    # ─────── ADMIN: RAD ETISH ───────
     @dp.callback_query(F.data.startswith("reject_"))
     async def admin_reject(call: types.CallbackQuery):
-        order_id = int(call.data.split("_")[1])
-        result = await api_post(f"/public/update-order-status", {
+        try:
+            order_id = int(call.data.split("_")[1])
+        except (ValueError, IndexError):
+            await call.answer("Xato")
+            return
+        result = await api_post("/public/update-order-status", {
             "order_id": order_id,
             "status": "cancelled",
             "tenant_id": tenant_id
         })
         if result:
-            await call.message.edit_text(
-                call.message.text + f"\n\n❌ *Rad etildi* — {call.from_user.full_name}",
-                parse_mode="Markdown", reply_markup=None
-            )
-            await call.answer("❌ Buyurtma rad etildi!")
+            try:
+                await call.message.edit_text(
+                    (call.message.text or "") + f"\n\n❌ *Rad etildi*",
+                    parse_mode="Markdown", reply_markup=None
+                )
+            except Exception:
+                pass
+            await call.answer("❌ Rad etildi")
         else:
-            await call.answer("❌ Xato yuz berdi!")
+            await call.answer("❌ Xato yuz berdi", show_alert=True)
 
-    # ── NOMA'LUM XABAR ──
+    # ─────── NOMA'LUM ───────
     @dp.message()
     async def unknown(msg: types.Message, state: FSMContext):
         if await state.get_state() is None:
-            await msg.answer("Buyurtma berish uchun tugmani bosing 👇", reply_markup=main_kb())
+            await msg.answer("👇 Quyidagi tugmalardan foydalaning:", reply_markup=main_kb())
 
     return dp
 
@@ -706,10 +767,8 @@ def create_dispatcher(tenant_id: int, tenant_name: str, admin_chat_id: str) -> D
 # ══════════════════════════════════════════════
 # BOT MANAGER
 # ══════════════════════════════════════════════
-
 async def start_bot_polling(bot_token: str, tenant_id: int, tenant_name: str, admin_chat_id: str = ""):
     if bot_token in active_bots:
-        # admin_chat_id yangilash
         active_bots[bot_token]["admin_chat_id"] = admin_chat_id
         return True
     try:
@@ -719,7 +778,7 @@ async def start_bot_polling(bot_token: str, tenant_id: int, tenant_name: str, ad
 
         async def polling_task():
             try:
-                logger.info(f"✅ Bot polling: {tenant_name}")
+                logger.info(f"✅ Polling: {tenant_name}")
                 await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
             except Exception as e:
                 logger.error(f"Polling xato {tenant_name}: {e}")
@@ -735,10 +794,10 @@ async def start_bot_polling(bot_token: str, tenant_id: int, tenant_name: str, ad
             "admin_chat_id": admin_chat_id,
             "task": task
         }
-        logger.info(f"✅ Bot ro'yxatdan o'tdi: {tenant_name} (tenant_id={tenant_id})")
+        logger.info(f"✅ Bot ishga tushdi: {tenant_name} (tenant_id={tenant_id})")
         return True
     except Exception as e:
-        logger.error(f"Bot ishga tushirishda xato: {e}")
+        logger.error(f"Bot ishga tushirish xato: {e}")
         return False
 
 
@@ -750,10 +809,10 @@ async def stop_bot(bot_token: str):
         entry["task"].cancel()
         await entry["bot"].session.close()
         del active_bots[bot_token]
-        logger.info(f"Bot to'xtatildi: {bot_token[:10]}...")
+        logger.info(f"Bot to'xtatildi")
         return True
     except Exception as e:
-        logger.error(f"Bot to'xtatishda xato: {e}")
+        logger.error(f"Bot to'xtatish xato: {e}")
         return False
 
 
@@ -776,7 +835,6 @@ async def load_bots():
 # ══════════════════════════════════════════════
 # HTTP API (internal)
 # ══════════════════════════════════════════════
-
 async def handle_register(request: web.Request) -> web.Response:
     try:
         data = await request.json()
