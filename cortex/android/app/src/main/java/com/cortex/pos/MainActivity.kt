@@ -344,7 +344,7 @@ fun OrdersScreen(token: String) {
                 }
             }
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(orders, key = { it.id }) { order ->
+                items(orders, key = { "orders_${it.id}" }) { order ->
                     OrderRow(
                         order = order, token = token,
                         onCheckout = { checkoutOrder = order },
@@ -621,7 +621,7 @@ fun RoomsTab(token: String, isAdmin: Boolean) {
             loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = MidBlue) }
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 // ── XONALAR ──
-                items(rooms, key = { it.id }) { room ->
+                items(rooms, key = { "rooms_${it.id}" }) { room ->
                     RoomCard(
                         room = room,
                         roomOrder = orders.firstOrNull {
@@ -642,7 +642,7 @@ fun RoomsTab(token: String, isAdmin: Boolean) {
                         Spacer(Modifier.height(8.dp))
                         Text("Aktiv buyurtmalar", fontWeight = FontWeight.Bold, color = OrangeWarn, fontSize = 13.sp)
                     }
-                    items(activeOrders, key = { it.id }) { order ->
+                    items(activeOrders, key = { "activeOrders_${it.id}" }) { order ->
                         OrderRow(order, token,
                             onCheckout = { checkoutOrder = order },
                             onRefresh = { refresh() },
@@ -661,7 +661,7 @@ fun RoomsTab(token: String, isAdmin: Boolean) {
                         }
                         Spacer(Modifier.height(4.dp))
                     }
-                    items(historyOrders.take(20), key = { it.id }) { order ->
+                    items(historyOrders.take(20), key = { "historyOrders_${it.id}" }) { order ->
                         CompactOrderRow(order)
                     }
                 }
@@ -850,7 +850,7 @@ fun SimpleRoomOrderDialog(
                 item {
                     Text("Mahsulotlar:", fontWeight = FontWeight.Bold, color = DarkBlue, fontSize = 13.sp)
                 }
-                items(filteredProducts, key = { it.id }) { p ->
+                items(filteredProducts, key = { "filteredProducts_${it.id}" }) { p ->
                     CartProductRow(p, cart[p] ?: 0,
                         onAdd = { cart = cart.toMutableMap().also { it[p] = (cart[p] ?: 0) + 1 } },
                         onRemove = {
@@ -1042,7 +1042,7 @@ fun OnlineTab(token: String) {
                 val historyOrders = orders.filter { it.status in listOf("paid", "cancelled") }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (activeOrders.isNotEmpty()) {
-                        items(activeOrders, key = { it.id }) { order ->
+                        items(activeOrders, key = { "activeOrders_${it.id}" }) { order ->
                             OrderRow(
                                 order = order, token = token,
                                 onCheckout = { checkoutOrder = order },
@@ -1060,7 +1060,7 @@ fun OnlineTab(token: String) {
                                 Text("Buyurtmalar tarixi", fontWeight = FontWeight.Bold, color = TextGray, fontSize = 13.sp)
                             }
                         }
-                        items(historyOrders.take(20), key = { it.id }) { order ->
+                        items(historyOrders.take(20), key = { "historyOrders_${it.id}" }) { order ->
                             CompactOrderRow(order)
                         }
                     }
@@ -1175,7 +1175,7 @@ fun TakeawayTab(token: String) {
                         }
                     }
                     item { Text("Mahsulotlar:", fontWeight = FontWeight.Bold, color = DarkBlue, fontSize = 13.sp) }
-                    items(filteredProducts, key = { it.id }) { p ->
+                    items(filteredProducts, key = { "filteredProducts_${it.id}" }) { p ->
                         CartProductRow(p, cart[p] ?: 0,
                             onAdd = { cart = cart.toMutableMap().also { it[p] = (cart[p] ?: 0) + 1 } },
                             onRemove = {
@@ -1284,7 +1284,7 @@ fun TakeawayTab(token: String) {
                 val historyOrders = orders.filter { it.status in listOf("paid", "cancelled") }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (activeOrders.isNotEmpty()) {
-                        items(activeOrders, key = { it.id }) { order ->
+                        items(activeOrders, key = { "activeOrders_${it.id}" }) { order ->
                             OrderRow(order, token,
                                 onCheckout = { checkoutOrder = order },
                                 onRefresh = { refresh() },
@@ -1300,7 +1300,7 @@ fun TakeawayTab(token: String) {
                                 Text("Buyurtmalar tarixi", fontWeight = FontWeight.Bold, color = TextGray, fontSize = 13.sp)
                             }
                         }
-                        items(historyOrders.take(20), key = { it.id }) { order ->
+                        items(historyOrders.take(20), key = { "historyOrders_${it.id}" }) { order ->
                             CompactOrderRow(order)
                         }
                     }
@@ -1555,7 +1555,7 @@ fun OrderEditDialog(order: Order, token: String, onDismiss: () -> Unit, onSaved:
                     item {
                         Text("Mavjud tarkib:", fontWeight = FontWeight.Bold, color = DarkBlue, fontSize = 13.sp)
                     }
-                    items(currentItems, key = { it.id }) { item ->
+                    items(currentItems, key = { "currentItems_${it.id}" }) { item ->
                         Row(
                             Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
                                 .background(Color(0xFFF8FAFC)).padding(8.dp),
@@ -1607,7 +1607,7 @@ fun OrderEditDialog(order: Order, token: String, onDismiss: () -> Unit, onSaved:
                         }
                     }
                 }
-                items(filteredProducts, key = { it.id }) { p ->
+                items(filteredProducts, key = { "filteredProducts_${it.id}" }) { p ->
                     CartProductRow(p, cart[p] ?: 0,
                         onAdd = { cart = cart.toMutableMap().also { it[p] = (cart[p] ?: 0) + 1 } },
                         onRemove = {
@@ -2260,7 +2260,7 @@ fun PaymentScreen(token: String) {
                         }
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(activeOrders, key = { it.id }) { order ->
+                            items(activeOrders, key = { "activeOrders_${it.id}" }) { order ->
                                 OrderRow(order, token,
                                     onCheckout = { checkoutOrder = order },
                                     onRefresh = { refresh() }
@@ -2281,7 +2281,7 @@ fun PaymentScreen(token: String) {
                         }
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(historyOrders, key = { it.id }) { order ->
+                            items(historyOrders, key = { "historyOrders_${it.id}" }) { order ->
                                 CompactOrderRow(order)
                             }
                             item { Spacer(Modifier.height(8.dp)) }
@@ -2620,7 +2620,7 @@ fun MenuScreen(token: String, userRole: String = "") {
                                 Text("${catProducts.size}", color = TextGray, fontSize = 11.sp)
                             }
                         }
-                        items(catProducts, key = { it.id }) { p ->
+                        items(catProducts, key = { "catProducts_${it.id}" }) { p ->
                             CompactProductRow(
                                 product = p,
                                 isAdmin = isAdmin,
@@ -2876,7 +2876,7 @@ fun InventoryScreen(token: String, userRole: String = "") {
                 }
             }
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(items, key = { it.id }) { item ->
+                items(items, key = { "items_${it.id}" }) { item ->
                     val sc = when (item.status) { "ok" -> GreenOk; "low" -> Accent; else -> RedBusy }
                     val st = when (item.status) { "ok" -> "Yetarli"; "low" -> "Kam"; else -> "Tugagan" }
                     Card(
@@ -3561,158 +3561,4 @@ fun WorkersScreen(token: String) {
                             }
                         }
                     }
-                    if (errorMsg.isNotEmpty()) Text(errorMsg, color = RedBusy, fontSize = 13.sp)
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        when {
-                            fullName.isEmpty() -> { errorMsg = "Ism kiriting"; return@Button }
-                            login.isEmpty() -> { errorMsg = "Login kiriting"; return@Button }
-                            password.length < 4 -> { errorMsg = "Parol kamida 4 belgi"; return@Button }
-                        }
-                        scope.launch {
-                            ApiService.createWorker(token, fullName, login, password, selectedRole)
-                                .onSuccess {
-                                    showAddDialog = false
-                                    fullName = ""; login = ""; password = ""; errorMsg = ""
-                                    refresh()
-                                }.onFailure {
-                                    errorMsg = if (it.message?.contains("band") == true)
-                                        "Bu login band!" else "Xato: ${it.message}"
-                                }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = GreenOk)
-                ) { Text("Saqlash") }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = {
-                    showAddDialog = false; errorMsg = ""
-                    fullName = ""; login = ""; password = ""
-                }) { Text("Bekor") }
-            }
-        )
-    }
-
-    editWorker?.let { worker ->
-        var eName by remember(worker) { mutableStateOf(worker.full_name) }
-        var eRole by remember(worker) { mutableStateOf(worker.role) }
-        AlertDialog(
-            onDismissRequest = { editWorker = null },
-            title = { Text("Xodimni tahrirlash", fontWeight = FontWeight.Bold, color = DarkBlue) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = eName, onValueChange = { eName = it },
-                        label = { Text("Ism Familiya") }, modifier = Modifier.fillMaxWidth()
-                    )
-                    Text("Lavozim:", fontWeight = FontWeight.Bold, color = DarkBlue)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("cashier" to "Kassir", "waiter" to "Ofitsiant").forEach { (k, l) ->
-                            Button(
-                                onClick = { eRole = k },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (eRole == k) MidBlue else Color.LightGray
-                                ),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                            ) {
-                                Text(l, fontSize = 13.sp, color = if (eRole == k) Color.White else DarkBlue)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        scope.launch {
-                            ApiService.updateWorker(token, worker.id, eName, eRole)
-                                .onSuccess { editWorker = null; refresh() }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = GreenOk)
-                ) { Text("Saqlash") }
-            },
-            dismissButton = { OutlinedButton(onClick = { editWorker = null }) { Text("Bekor") } }
-        )
-    }
-
-    Column(modifier = Modifier.fillMaxSize().background(BgGray).padding(16.dp)) {
-        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-            Text("Xodimlar", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = DarkBlue)
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Button(
-                    onClick = { showAddDialog = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = MidBlue),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                ) { Text("+ Qo'shish", fontSize = 12.sp) }
-                IconButton(onClick = { refresh() }) {
-                    Icon(Icons.Default.Refresh, null, tint = MidBlue)
-                }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        when {
-            loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                CircularProgressIndicator(color = MidBlue)
-            }
-            workers.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                Text("Xodimlar topilmadi", color = TextGray)
-            }
-            else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(workers) { worker ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.White),
-                        elevation = CardDefaults.cardElevation(2.dp)
-                    ) {
-                        Row(
-                            Modifier.padding(16.dp).fillMaxWidth(),
-                            Arrangement.SpaceBetween, Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(worker.full_name, fontWeight = FontWeight.Bold, color = DarkBlue, fontSize = 15.sp)
-                                Text(
-                                    when (worker.role) { "cashier" -> "💳 Kassir"; "waiter" -> "🍽 Ofitsiant"; else -> worker.role },
-                                    color = TextGray, fontSize = 12.sp
-                                )
-                                Text("@${worker.login}", color = TextGray, fontSize = 11.sp)
-                            }
-                            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Box(
-                                    Modifier.clip(RoundedCornerShape(8.dp))
-                                        .background(if (worker.is_active) GreenOk.copy(0.15f) else RedBusy.copy(0.15f))
-                                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                                ) {
-                                    Text(
-                                        if (worker.is_active) "Faol" else "Bloklangan",
-                                        color = if (worker.is_active) GreenOk else RedBusy,
-                                        fontSize = 11.sp, fontWeight = FontWeight.Bold
-                                    )
-                                }
-                                Row {
-                                    IconButton(
-                                        onClick = { editWorker = worker },
-                                        modifier = Modifier.size(32.dp)
-                                    ) { Icon(Icons.Default.Edit, null, tint = MidBlue, modifier = Modifier.size(16.dp)) }
-                                    IconButton(
-                                        onClick = {
-                                            scope.launch {
-                                                ApiService.deleteWorker(token, worker.id); refresh()
-                                            }
-                                        },
-                                        modifier = Modifier.size(32.dp)
-                                    ) { Icon(Icons.Default.Delete, null, tint = RedBusy, modifier = Modifier.size(16.dp)) }
-                                }
-                            }
-                        }
-                    }
-                }
-                item { Spacer(Modifier.height(8.dp)) }
-            }
-        }
-    }
-}
+                    if (errorMsg.isNotEmpty()) Tex                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
